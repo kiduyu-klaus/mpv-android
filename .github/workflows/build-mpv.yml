@@ -1,0 +1,146 @@
+name: build-mpv
+
+# Builds the native mpv library for the three architectures that are not
+# covered by build.yml (arm64, x86, x86_64).
+#
+# Equivalent to running this by hand:
+#
+#   cd buildscripts
+#   ./download.sh
+#   ./buildall.sh --arch arm64   mpv
+#   ./buildall.sh --arch x86     mpv
+#   ./buildall.sh --arch x86_64  mpv
+
+on:
+  workflow_dispatch:
+    inputs:
+      refresh-deps:
+        description: "Re-download the dependency sources instead of restoring them from the cache"
+        required: false
+        type: boolean
+        default: false
+  push:
+    paths:
+      - "buildscripts/**"
+      - ".github/workflows/build-mpv.yml"
+  pull_request:
+    paths:
+      - "buildscripts/**"
+      - ".github/workflows/build-mpv.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-mpv-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build mpv (arm64, x86, x86_64)
+    runs-on: ubuntu-24.04
+    # Building ffmpeg, libplacebo and mpv three times takes a while
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # The SDK tools (sdkmanager) and the Gradle build need a JDK
+      - uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: temurin
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf automake libtool pkgconf ninja-build gperf nasm \
+            unzip wget git perl make xz-utils bzip2 \
+            python3 python3-pip ca-certificates
+          # mpv and libplacebo require meson >= 1.3
+          sudo pip3 install --break-system-packages --upgrade meson
+          meson --version
+
+      - name: Set up the Android SDK
+        run: |
+          if [ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME" ] && \
+             [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            echo "Using the Android SDK from the runner ($ANDROID_HOME)"
+            # Accept the licenses, otherwise sdkmanager aborts
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+              --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
+            mkdir -p "$ANDROID_HOME/licenses" 2>/dev/null || true
+            printf '%s\n' \
+              24333f8a63b6825ea9c5514f83c2829b004d1fee \
+              8933bad161af4178b1185d1a37fbf41ea5269c55 \
+              84831b9409646a918e30573bab4c9c91346d8abd \
+              >"$ANDROID_HOME/licenses/android-sdk-license" 2>/dev/null || true
+            # download.sh reuses this instead of downloading the command line tools
+            mkdir -p buildscripts/sdk
+            ln -sfn "$ANDROID_HOME" buildscripts/sdk/android-sdk-linux
+          else
+            echo "No Android SDK found, download.sh will install its own"
+          fi
+
+      - name: Restore the cached dependency sources
+        # The build directories are excluded: meson refuses to reconfigure an
+        # existing build directory, so they must not be restored from a cache.
+        if: ${{ !inputs.refresh-deps }}
+        uses: actions/cache@v6
+        with:
+          path: |
+            buildscripts/deps
+            !buildscripts/deps/**/_build_*
+          key: mpv-deps-${{ hashFiles('buildscripts/include/depinfo.sh') }}
+
+      - name: Download the SDK, the NDK and the sources
+        working-directory: buildscripts
+        env:
+          # Skip the package installation (done above) and pin ffmpeg to a
+          # release instead of tracking its master branch.
+          IN_CI: "1"
+        run: ./download.sh
+
+      - name: Build mpv for arm64
+        working-directory: buildscripts
+        run: ./buildall.sh --arch arm64 mpv
+
+      - name: Build mpv for x86
+        working-directory: buildscripts
+        run: ./buildall.sh --arch x86 mpv
+
+      - name: Build mpv for x86_64
+        working-directory: buildscripts
+        run: ./buildall.sh --arch x86_64 mpv
+
+      - name: Upload the arm64 libraries
+        uses: actions/upload-artifact@v7
+        with:
+          name: mpv-arm64
+          path: |
+            buildscripts/prefix/arm64/lib
+            buildscripts/prefix/arm64/include
+          if-no-files-found: error
+
+      - name: Upload the x86 libraries
+        uses: actions/upload-artifact@v7
+        with:
+          name: mpv-x86
+          path: |
+            buildscripts/prefix/x86/lib
+            buildscripts/prefix/x86/include
+          if-no-files-found: error
+
+      - name: Upload the x86_64 libraries
+        uses: actions/upload-artifact@v7
+        with:
+          name: mpv-x86_64
+          path: |
+            buildscripts/prefix/x86_64/lib
+            buildscripts/prefix/x86_64/include
+          if-no-files-found: error
+
+      - name: Summary
+        run: |
+          find buildscripts/prefix -name 'libmpv.so*' -exec ls -lh {} \;
