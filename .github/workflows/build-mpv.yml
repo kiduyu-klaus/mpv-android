@@ -1,12 +1,14 @@
 name: build-mpv
 
-# Builds the native mpv library for the three architectures that are not
-# covered by build.yml (arm64, x86, x86_64).
+# Builds the native mpv library for all four Android ABIs.
+# build.yml only produces the armv7l/arm64 APKs, this workflow additionally
+# builds the libraries for every ABI.
 #
 # Equivalent to running this by hand:
 #
 #   cd buildscripts
 #   ./download.sh
+#   ./buildall.sh --arch armv7l  mpv
 #   ./buildall.sh --arch arm64   mpv
 #   ./buildall.sh --arch x86     mpv
 #   ./buildall.sh --arch x86_64  mpv
@@ -37,9 +39,9 @@ concurrency:
 
 jobs:
   build:
-    name: Build mpv (arm64, x86, x86_64)
+    name: Build mpv (armv7l, arm64, x86, x86_64)
     runs-on: ubuntu-24.04
-    # Building ffmpeg, libplacebo and mpv three times takes a while
+    # Building ffmpeg, libplacebo and mpv four times takes a while
     timeout-minutes: 360
 
     steps:
@@ -102,6 +104,10 @@ jobs:
           IN_CI: "1"
         run: ./download.sh
 
+      - name: Build mpv for armv7l
+        working-directory: buildscripts
+        run: ./buildall.sh --arch armv7l mpv
+
       - name: Build mpv for arm64
         working-directory: buildscripts
         run: ./buildall.sh --arch arm64 mpv
@@ -113,6 +119,15 @@ jobs:
       - name: Build mpv for x86_64
         working-directory: buildscripts
         run: ./buildall.sh --arch x86_64 mpv
+
+      - name: Upload the armv7l libraries
+        uses: actions/upload-artifact@v7
+        with:
+          name: mpv-armeabi-v7a
+          path: |
+            buildscripts/prefix/armv7l/lib
+            buildscripts/prefix/armv7l/include
+          if-no-files-found: error
 
       - name: Upload the arm64 libraries
         uses: actions/upload-artifact@v7
@@ -143,4 +158,4 @@ jobs:
 
       - name: Summary
         run: |
-          find buildscripts/prefix -name 'libmpv.so*' -exec ls -lh {} \;
+          find buildscripts/prefix -name 'libmpv.so*' -exec ls -lh {} \; || true
